@@ -1,99 +1,163 @@
-<script lang="ts">
+<script>
+  import { Chat } from '@ai-sdk/svelte';
   import { onMount } from 'svelte';
-  import { fetchRandomUser, type User } from '$lib/fetchRandomUser';
+  import { fetchRandomUser } from '$lib/fetchRandomUser';
 
-  let user: User | null = null;
-  let loading = true;
-  let error: string | null = null;
+  const chat = new Chat();
+  let currentUser = $state(null);
+  let isLoading = $state(true);
+  let userMessage = $state("");
+  let messagesContainer;
 
-  // ユーザーデータを読み込む関数
-  async function loadUser() {
-    loading = true;
-    error = null;
-    
-    try {
-      user = await fetchRandomUser();
-    } catch (err) {
-      error = err instanceof Error ? err.message : '不明なエラーが発生しました';
-    } finally {
-      loading = false;
+  // メッセージが追加されるたびに実行される$effect
+  $effect(() => {
+    // chat.messagesが変更されたらスクロールする
+    if (chat.messages && messagesContainer) {
+      scrollToBottom();
+    }
+  });
+
+  // 最下部にスクロールする関数
+  function scrollToBottom() {
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
   }
 
-  // 新しいユーザーを読み込む関数
-  function loadNewUser() {
-    loadUser();
-  }
-
-  // コンポーネントがマウントされた時に初回読み込み
-  onMount(() => {
-    loadUser();
+  onMount(async () => {
+    try {
+      currentUser = await fetchRandomUser();
+      isLoading = false;
+    } catch (error) {
+      console.error('ユーザー取得エラー:', error);
+      isLoading = false;
+    }
   });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!currentUser) {
+      try {
+        currentUser = await fetchRandomUser();
+      } catch (error) {
+        console.error('ユーザー取得エラー:', error);
+        return;
+      }
+    }
+
+    // ユーザー情報をオプションとして渡す
+    const userData = {
+      name: `${currentUser.name.first} ${currentUser.name.last}`,
+      gender: currentUser.gender,
+      country: currentUser.location.country,
+      city: currentUser.location.city,
+      age: currentUser.dob.age,
+      email: currentUser.email,
+      username: currentUser.login.username,
+      picture: currentUser.picture.thumbnail
+    };
+
+    // ユーザーメッセージを追加
+    await chat.append({
+      data: { user: userData },
+      content: userMessage,
+      role: "user"
+    });
+    
+    // Chat SDKのhandleSubmitを呼び出す
+    await chat.handleSubmit(e);
+    
+    // 入力フィールドをクリア
+    userMessage = "";
+  };
 </script>
 
 <main>
-  <h1>ユーザー情報取得チェック</h1>
-
-  <button on:click={loadNewUser} style="margin-bottom: 15pt;">新しいユーザーを表示</button>
-
-  {#if loading}
-    <p>読み込み中...</p>
-  {:else if error}
-    <p>エラー: {error}</p>
-    <button on:click={loadNewUser}>ユーザーを変更</button>
-  {:else if user}
+  <div>
     <div>
-      <img src={user.picture.large} alt="ユーザープロフィール画像" />
+      {#if isLoading}
+        <div>ユーザー情報を読み込み中...</div>
+      {/if}
       
-      <h2>{user.name.title} {user.name.first} {user.name.last}</h2>
-      
-      <table>
-        <tbody>
-          <tr>
-            <th>基本情報</th>
-            <td>
-              <ul>
-                <li>性別: {user.gender}</li>
-                <li>年齢: {user.dob.age}歳</li>
-                <li>国籍: {user.nat}</li>
-                <li>メール: {user.email}</li>
-              </ul>
-            </td>
-          </tr>
-          <tr>
-            <th>連絡先</th>
-            <td>
-              <ul>
-                <li>電話: {user.phone}</li>
-                <li>携帯: {user.cell}</li>
-              </ul>
-            </td>
-          </tr>
-          <tr>
-            <th>住所</th>
-            <td>
-              <ul>
-                <li>国: {user.location.country}</li>
-                <li>都市: {user.location.city}</li>
-                <li>州/県: {user.location.state}</li>
-                <li>番地: {user.location.street.number} {user.location.street.name}</li>
-                <li>郵便番号: {user.location.postcode}</li>
-              </ul>
-            </td>
-          </tr>
-          <tr>
-            <th>アカウント</th>
-            <td>
-              <ul>
-                <li>ユーザー名: {user.login.username}</li>
-                <li>UUID: {user.login.uuid}</li>
-                <li>登録日: {new Date(user.registered.date).toLocaleDateString()}</li>
-              </ul>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      
+      {#if currentUser}
+        <div>
+          <img src={currentUser.picture.medium} alt="Profile" />
+          <div>
+            <h2>@{currentUser.login.username}</h2>
+            <p>{currentUser.name.first} {currentUser.name.last}</p>
+            <p>{currentUser.location.country}, {currentUser.location.city}</p>
+            <p>{currentUser.dob.age}歳</p>
+          </div>
+        </div>
+      {/if}
     </div>
-  {/if}
+
+    <div>
+      <div bind:this={messagesContainer}>
+        {#each chat.messages as message, messageIndex (messageIndex)}
+          <div>
+            {#if message.role === 'user'}
+              <div>
+                <div>
+                  {#each message.parts as part, partIndex (partIndex)}
+                    {#if part.type === 'text'}
+                      <p>{part.text}</p>
+                    {/if}
+                  {/each}
+                </div>
+                <div>
+                  <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+              </div>
+              <div>
+                <div>You</div>
+              </div>
+            {:else if message.role === 'assistant'}
+              <hr />
+              <div>
+                {#if currentUser}
+                  <img src={currentUser.picture.thumbnail} alt="Avatar" />
+                {/if}
+              </div>
+              <div>
+                <div>
+                  {#if currentUser}
+                    <span>@{currentUser.login.username}</span>
+                    <span>{currentUser.location.country}</span>
+                  {/if}
+                </div>
+                <div>
+                  {#each message.parts as part, partIndex (partIndex)}
+                    {#if part.type === 'text'}
+                      <p>{part.text}</p>
+                    {/if}
+                  {/each}
+                </div>
+                <div>
+                  <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+              </div>
+              <hr />
+            {/if}
+          </div>
+        {/each}
+      </div>
+      
+      <div>
+        <form onsubmit={handleSubmit}>
+          <input 
+            bind:value={userMessage} 
+            placeholder="メッセージを入力してください..." 
+          />
+          <button 
+            type="submit" 
+            disabled={isLoading}
+          >
+            送信
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
 </main>
