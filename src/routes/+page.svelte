@@ -5,7 +5,6 @@
 
   const chat = new Chat();
   
-  // Svelte 5 Runes ($state)
   let currentUser = $state(null);
   let isLoading = $state(true);
   let userMessage = $state("");
@@ -14,12 +13,10 @@
   // 録音・デバッグ用ステート
   let isRecording = $state(false);
   let debugStatus = $state("初期化待ち..."); 
-  let recognition; // APIインスタンス
+  let recognition; 
 
-  // ★ここにBlob Storeのロゴ画像のURLを貼る
   const logo_img_url = "https://qsbkq9revdprke1d.public.blob.vercel-storage.com/vercel_tutorial/logo.png";
 
-  // スクロール制御
   $effect(() => {
     if (chat.messages && messagesContainer) {
       scrollToBottom();
@@ -32,23 +29,18 @@
     }
   }
 
-  // 初期化処理
   onMount(async () => {
-    // ---------------------------------------------------------
-    // 1. 先に音声認識の準備を行う（ユーザー取得を待たない）
-    // ---------------------------------------------------------
+    // 1. マイクの準備
     debugStatus = "音声認識APIを確認中...";
-    
-    // ブラウザのAPIチェック
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       debugStatus = "エラー: このブラウザは音声認識APIを持っていません (Chrome推奨)。";
     } else {
       try {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         recognition = new SpeechRecognition();
-        recognition.lang = 'ja-JP';      // 日本語
-        recognition.continuous = true;   // 連続認識
-        recognition.interimResults = true; // 途中結果も取得
+        recognition.lang = 'ja-JP';
+        recognition.continuous = true;
+        recognition.interimResults = true;
 
         recognition.onstart = () => {
           debugStatus = "録音中... (話しかけてください)";
@@ -61,7 +53,6 @@
               finalTranscript += event.results[i][0].transcript;
             }
           }
-          // 既存の入力値に追記
           if (finalTranscript) {
             userMessage = (userMessage + " " + finalTranscript).trim();
           }
@@ -70,9 +61,8 @@
         recognition.onerror = (event) => {
           console.error("詳細エラー:", event);
           isRecording = false;
-          
           if (event.error === 'not-allowed') {
-            debugStatus = "エラー: マイクの使用が許可されていません。ブラウザ設定を確認してください。";
+            debugStatus = "エラー: マイクの使用が許可されていません。";
           } else if (event.error === 'network') {
             debugStatus = "エラー: ネットワーク接続が必要です。";
           } else {
@@ -81,40 +71,33 @@
         };
 
         recognition.onend = () => {
-          // 意図せず止まった場合の表示更新
           if (isRecording) {
             isRecording = false;
             debugStatus = "待機中 (自動停止しました)";
           }
         };
-        
         debugStatus = "待機中 (準備OK)";
-        
       } catch (e) {
         console.error(e);
         debugStatus = `初期化例外: ${e.message}`;
       }
     }
 
-    // ---------------------------------------------------------
-    // 2. その後でユーザー情報を取得する（失敗してもチャットは使えるようにする）
-    // ---------------------------------------------------------
+    // 2. ユーザー取得（失敗してもOKにする）
     try {
       currentUser = await fetchRandomUser();
     } catch (error) {
-      console.error('ユーザー取得エラー:', error);
+      console.error('ユーザー取得エラー（無視して続行）:', error);
     } finally {
       isLoading = false;
     }
   });
 
-  // 録音開始・停止ボタン
   const toggleRecording = () => {
     if (!recognition) {
       alert(`機能が利用できません。\n現在の状態: ${debugStatus}`);
       return;
     }
-
     if (isRecording) {
       recognition.stop();
       isRecording = false;
@@ -130,24 +113,15 @@
     }
   };
 
-  // 送信処理
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!userMessage.trim()) return;
 
-    // 録音中なら停止
     if (isRecording) {
       toggleRecording();
     }
 
-    if (!currentUser) {
-      try {
-        currentUser = await fetchRandomUser();
-      } catch (error) {
-        // ユーザー取得失敗しても続行
-      }
-    }
-
+    // ユーザー情報がない場合はゲストとして扱う
     const userData = currentUser ? {
       name: `${currentUser.name.first} ${currentUser.name.last}`,
       gender: currentUser.gender,
@@ -157,9 +131,17 @@
       email: currentUser.email,
       username: currentUser.login.username,
       picture: currentUser.picture.thumbnail
-    } : { name: "Guest" }; // フォールバック
+    } : { 
+      name: "Guest User",
+      gender: "unknown",
+      country: "Japan",
+      city: "Tokyo",
+      age: 30,
+      email: "guest@example.com",
+      username: "guest",
+      picture: "https://via.placeholder.com/150" // 仮の画像
+    };
 
-    // AIへの指示（要約プロンプト）を付与
     const contentToSend = `【以下の録音データを要約してください】\n\n${userMessage}`;
 
     await chat.append({
@@ -187,6 +169,14 @@
             <p class="real-name">{currentUser.name.first} {currentUser.name.last}</p>
             <p class="location">{currentUser.location.country}, {currentUser.location.city}</p>
             <p class="age">{currentUser.dob.age}歳</p>
+          </div>
+        </div>
+      {:else if !isLoading}
+        <div class="profile-card">
+          <div class="profile-image" style="background: #ccc; display:flex; align-items:center; justify-content:center;">G</div>
+          <div class="profile-info">
+            <h2>Guest</h2>
+            <p class="real-name">ゲストユーザー</p>
           </div>
         </div>
       {/if}
@@ -220,6 +210,8 @@
               <div class="assistant-avatar">
                 {#if currentUser}
                   <img src={currentUser.picture.thumbnail} alt="Avatar" />
+                {:else}
+                   <div style="width:100%; height:100%; background:#ccc;"></div>
                 {/if}
               </div>
               <div class="message assistant-message">
@@ -227,6 +219,8 @@
                   {#if currentUser}
                     <span class="author-name">@{currentUser.login.username}</span>
                     <span class="author-location">{currentUser.location.country}</span>
+                  {:else}
+                    <span class="author-name">AI Assistant</span>
                   {/if}
                 </div>
                 <div class="message-text">
@@ -278,7 +272,7 @@
           />
           <button 
             type="submit" 
-            disabled={isLoading && !currentUser} 
+            disabled={!userMessage} 
             class="send-button"
           >
             要約する
@@ -290,245 +284,40 @@
 </main>
 
 <style>
-  .chat-container {
-    display: flex;
-    height: 100vh;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  }
-  
-  .profile-section {
-    width: 300px;
-    border-right: 1px solid #e1e4e8;
-    padding: 20px;
-    background-color: #f8f9fa;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-  }
-  
-  .messages-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-  
-  .messages-container {
-    flex: 1;
-    padding: 20px;
-    overflow-y: auto;
-    background-color: #fff;
-    scroll-behavior: smooth;
-  }
-  
-  .input-section {
-    padding: 15px;
-    border-top: 1px solid #e1e4e8;
-    background-color: #f8f9fa;
-  }
-  
-  .message-form {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  
-  .message-input {
-    flex: 1;
-    padding: 12px;
-    border: 1px solid #dfe1e5;
-    border-radius: 24px;
-    font-size: 16px;
-    outline: none;
-  }
-  
-  .send-button {
-    padding: 0 20px;
-    height: 44px;
-    background-color: #1a73e8;
-    color: white;
-    border: none;
-    border-radius: 24px;
-    font-weight: bold;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  
-  .send-button:disabled {
-    background-color: #a8c7fa;
-    cursor: not-allowed;
-  }
-
-  /* マイクボタンのスタイル */
-  .mic-button {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    border: 1px solid #dfe1e5;
-    background-color: white;
-    color: #5f6368;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-  }
-
-  .mic-button:hover {
-    background-color: #f1f3f4;
-  }
-
-  .mic-button.recording {
-    background-color: #ea4335;
-    color: white;
-    border-color: #ea4335;
-    animation: pulse 1.5s infinite;
-  }
-
-  @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); }
-    70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
-  }
-  
-  .message-row {
-    display: flex;
-    margin-bottom: 20px;
-  }
-  
-  .message-row.user {
-    flex-direction: row-reverse;
-  }
-  
-  .message {
-    max-width: 70%;
-    padding: 15px;
-    border-radius: 18px;
-    position: relative;
-  }
-  
-  .user-message {
-    background-color: #e6f7ff;
-    margin-right: 15px;
-    border-top-right-radius: 4px;
-  }
-  
-  .assistant-message {
-    background-color: #f1f3f4;
-    margin-left: 15px;
-    border-top-left-radius: 4px;
-  }
-  
-  .user-avatar, .assistant-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  
-  .user-avatar {
-    background-color: #1a73e8;
-    color: white;
-  }
-  
-  .assistant-avatar img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-  
-  .avatar-placeholder {
-    font-size: 12px;
-    font-weight: bold;
-  }
-  
-  .message-header {
-    margin-bottom: 8px;
-    font-weight: bold;
-  }
-  
-  .author-name {
-    font-size: 15px;
-  }
-  
-  .author-location {
-    font-size: 13px;
-    color: #5f6368;
-    margin-left: 8px;
-  }
-  
-  .message-text p {
-    margin: 0;
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-  
-  .message-info {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 8px;
-  }
-  
-  .message-time {
-    font-size: 12px;
-    color: #5f6368;
-  }
-  
-  .profile-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: 20px;
-    border-radius: 12px;
-    background-color: white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-  
-  .profile-image {
-    width: 120px;
-    height: 120px;
-    border-radius: 50%;
-    object-fit: cover;
-    margin-bottom: 15px;
-    border: 4px solid white;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  }
-  
-  .profile-info h2 {
-    margin: 0 0 5px 0;
-    font-size: 22px;
-  }
-  
-  .real-name {
-    color: #5f6368;
-    margin: 0 0 15px 0;
-    font-size: 16px;
-  }
-  
-  .location, .age {
-    margin: 5px 0;
-    color: #5f6368;
-    font-size: 14px;
-  }
-  
-  .loading {
-    text-align: center;
-    padding: 20px;
-    color: #5f6368;
-  }
-  
-  .logo-section {
-    margin-top: auto;
-    padding-top: 20px;
-  }
-  
-  .logo-image {
-    width: 100%;
-    height: auto;
-    max-width: 260px;
-    display: block;
-  }
+  .chat-container { display: flex; height: 100vh; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  .profile-section { width: 300px; border-right: 1px solid #e1e4e8; padding: 20px; background-color: #f8f9fa; display: flex; flex-direction: column; justify-content: space-between; }
+  .messages-section { flex: 1; display: flex; flex-direction: column; }
+  .messages-container { flex: 1; padding: 20px; overflow-y: auto; background-color: #fff; scroll-behavior: smooth; }
+  .input-section { padding: 15px; border-top: 1px solid #e1e4e8; background-color: #f8f9fa; }
+  .message-form { display: flex; align-items: center; gap: 10px; }
+  .message-input { flex: 1; padding: 12px; border: 1px solid #dfe1e5; border-radius: 24px; font-size: 16px; outline: none; }
+  .send-button { padding: 0 20px; height: 44px; background-color: #1a73e8; color: white; border: none; border-radius: 24px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+  .send-button:disabled { background-color: #a8c7fa; cursor: not-allowed; }
+  .mic-button { width: 44px; height: 44px; border-radius: 50%; border: 1px solid #dfe1e5; background-color: white; color: #5f6368; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+  .mic-button:hover { background-color: #f1f3f4; }
+  .mic-button.recording { background-color: #ea4335; color: white; border-color: #ea4335; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); } 100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); } }
+  .message-row { display: flex; margin-bottom: 20px; }
+  .message-row.user { flex-direction: row-reverse; }
+  .message { max-width: 70%; padding: 15px; border-radius: 18px; position: relative; }
+  .user-message { background-color: #e6f7ff; margin-right: 15px; border-top-right-radius: 4px; }
+  .assistant-message { background-color: #f1f3f4; margin-left: 15px; border-top-left-radius: 4px; }
+  .user-avatar, .assistant-avatar { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .user-avatar { background-color: #1a73e8; color: white; }
+  .assistant-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .avatar-placeholder { font-size: 12px; font-weight: bold; }
+  .message-header { margin-bottom: 8px; font-weight: bold; }
+  .author-name { font-size: 15px; }
+  .author-location { font-size: 13px; color: #5f6368; margin-left: 8px; }
+  .message-text p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
+  .message-info { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .message-time { font-size: 12px; color: #5f6368; }
+  .profile-card { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 20px; border-radius: 12px; background-color: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+  .profile-image { width: 120px; height: 120px; border-radius: 50%; object-fit: cover; margin-bottom: 15px; border: 4px solid white; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); }
+  .profile-info h2 { margin: 0 0 5px 0; font-size: 22px; }
+  .real-name { color: #5f6368; margin: 0 0 15px 0; font-size: 16px; }
+  .location, .age { margin: 5px 0; color: #5f6368; font-size: 14px; }
+  .loading { text-align: center; padding: 20px; color: #5f6368; }
+  .logo-section { margin-top: auto; padding-top: 20px; }
+  .logo-image { width: 100%; height: auto; max-width: 260px; display: block; }
 </style>
