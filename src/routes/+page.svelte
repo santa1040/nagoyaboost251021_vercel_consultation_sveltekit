@@ -11,7 +11,7 @@
   // --- ステート管理 (Svelte 5 Runes) ---
   let isRecording = $state(false);
   let fullTranscript = $state("");    // 全体の文字起こしテキスト
-  let bufferText = "";                // 30秒間に溜まったテキスト（要約に投げたら空にする）
+  let bufferText = "";                // 30秒間に溜まったテキスト
   let timeElapsed = $state(0);        // 30秒カウント用
   let timerInterval;                  // タイマーID
   
@@ -20,6 +20,7 @@
 
   // --- 初期化 ---
   onMount(() => {
+    // ブラウザチェック
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       statusMessage = "エラー: Chromeブラウザを使用してください。";
       return;
@@ -40,7 +41,6 @@
       }
       
       if (finalTranscript) {
-        // 画面表示用と、30秒バッファ用の両方に追加
         const newText = finalTranscript + "。";
         fullTranscript += newText;
         bufferText += newText;
@@ -56,12 +56,12 @@
     };
 
     recognition.onend = () => {
-      // 録音中フラグが立っているのに止まった場合は再開する（ブラウザの仕様対策）
+      // 録音中なのに止まった場合は再開（Chrome対策）
       if (isRecording) {
         try {
           recognition.start();
         } catch (e) {
-          // すでに動いている等のエラーは無視
+          // 無視
         }
       }
     };
@@ -107,16 +107,15 @@
 
   // --- 30秒ごとの処理 ---
   async function triggerIntervalSummary() {
-    if (!bufferText.trim()) return; // 話していない場合はスキップ
+    if (!bufferText.trim()) return; 
 
     const textToSummarize = bufferText;
-    bufferText = ""; // バッファをリセット
+    bufferText = ""; // バッファリセット
 
-    // AIに送信（liveChatインスタンスを使用）
-    // 過去の文脈を引き継ぎすぎないよう、明確に指示を出します
+    // AIに送信（liveChat）
     await liveChat.append({
       role: "user",
-      content: `以下の文章を簡潔な箇条書きでまとめてください（挨拶不要、事実のみ）：\n\n${textToSummarize}`
+      content: `以下の文章を簡潔な箇条書きでまとめてください（挨拶不要、事実のみ、JSON不可）：\n\n${textToSummarize}`
     });
   }
 
@@ -124,10 +123,11 @@
   async function handleFinalSummary() {
     if (!fullTranscript.trim()) return;
 
-    // AIに送信（summaryChatインスタンスを使用）
+    // AIに送信（summaryChat）
+    // ★修正: JSONを出力しないように指示を強化
     await summaryChat.append({
       role: "user",
-      content: `以下の会議/会話のログを、重要なポイントを整理して包括的に要約してください：\n\n${fullTranscript}`
+      content: `以下の会議/会話のログを、重要なポイントを整理して包括的に要約してください。JSON形式ではなく、見出しや箇条書きを使った読みやすいテキスト形式（マークダウン）で出力してください：\n\n${fullTranscript}`
     });
   }
 </script>
@@ -218,228 +218,37 @@
 </main>
 
 <style>
-  :global(body) {
-    margin: 0;
-    padding: 0;
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    background-color: #f0f2f5;
-    color: #333;
-  }
-
-  .app-container {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-  }
-
-  /* ヘッダー */
-  .control-panel {
-    background-color: #fff;
-    padding: 15px 30px;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    z-index: 10;
-  }
-
-  .status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: bold;
-    color: #555;
-  }
-
-  .status-dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background-color: #ccc;
-    transition: background-color 0.3s;
-  }
-
-  .status-dot.active {
-    background-color: #ea4335;
-    box-shadow: 0 0 0 4px rgba(234, 67, 53, 0.2);
-    animation: pulse 1.5s infinite;
-  }
-
-  .timer {
-    font-weight: normal;
-    color: #888;
-    font-size: 0.9em;
-  }
-
-  .buttons {
-    display: flex;
-    gap: 15px;
-  }
-
-  button {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 6px;
-    font-weight: bold;
-    cursor: pointer;
-    font-size: 14px;
-    transition: opacity 0.2s;
-  }
-
-  button:hover {
-    opacity: 0.9;
-  }
-
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .record-btn.start {
-    background-color: #ea4335;
-    color: white;
-  }
-
-  .record-btn.stop {
-    background-color: #333;
-    color: white;
-  }
-
-  .summary-btn {
-    background-color: #1a73e8;
-    color: white;
-  }
-
-  /* ワークスペース (左右カラム) */
-  .workspace {
-    flex: 1;
-    display: flex;
-    overflow: hidden; /* コンテナ自体はスクロールさせない */
-  }
-
-  .column {
-    flex: 1;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .transcript-column {
-    border-right: 1px solid #ddd;
-    background-color: #fff;
-    max-width: 40%;
-  }
-
-  .ai-column {
-    background-color: #f8f9fa;
-    gap: 20px;
-  }
-
-  h3 {
-    margin: 0 0 15px 0;
-    font-size: 16px;
-    color: #444;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    border-bottom: 2px solid #eee;
-    padding-bottom: 10px;
-  }
-
-  .scroll-area {
-    flex: 1;
-    overflow-y: auto;
-    background-color: #fff;
-    border: 1px solid #eee;
-    padding: 15px;
-    border-radius: 4px;
-  }
-
-  .transcript-text {
-    white-space: pre-wrap;
-    line-height: 1.8;
-    font-size: 16px;
-    color: #222;
-  }
-
-  /* 右側のセクション分割 */
-  .section {
-    display: flex;
-    flex-direction: column;
-    background: #fff;
-    border-radius: 8px;
-    padding: 15px;
-    border: 1px solid #e1e4e8;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-  }
-
-  .interval-summaries {
-    flex: 2; /* 箇条書きエリアを広めに */
-    overflow: hidden;
-  }
-
-  .final-result {
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .scroll-area-cards {
-    flex: 1;
-    overflow-y: auto;
-    padding-right: 5px;
-  }
-
-  /* カードスタイル */
-  .summary-card {
-    background-color: #fff;
-    border-left: 4px solid #34a853; /* 緑のアクセント */
-    padding: 12px;
-    margin-bottom: 10px;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    font-size: 14px;
-    line-height: 1.6;
-    border-radius: 0 4px 4px 0;
-  }
-  
-  .summary-card p {
-    margin: 0;
-    white-space: pre-wrap;
-  }
-
-  .result-box {
-    flex: 1;
-    overflow-y: auto;
-    background-color: #f0f7ff; /* 薄い青 */
-    padding: 15px;
-    border-radius: 4px;
-    font-size: 15px;
-    line-height: 1.6;
-  }
-
-  .final-content p {
-    margin-top: 0;
-  }
-
-  .typing-indicator {
-    font-size: 12px;
-    color: #888;
-    font-style: italic;
-    padding: 5px;
-  }
-  
-  .loading {
-    color: #1a73e8;
-    font-weight: bold;
-    animation: blink 1s infinite;
-  }
-
-  @keyframes blink {
-    50% { opacity: 0.5; }
-  }
-
-  @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); }
-    70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
-  }
+  :global(body) { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f0f2f5; color: #333; }
+  .app-container { display: flex; flex-direction: column; height: 100vh; }
+  .control-panel { background-color: #fff; padding: 15px 30px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); z-index: 10; }
+  .status-indicator { display: flex; align-items: center; gap: 10px; font-weight: bold; color: #555; }
+  .status-dot { width: 12px; height: 12px; border-radius: 50%; background-color: #ccc; transition: background-color 0.3s; }
+  .status-dot.active { background-color: #ea4335; box-shadow: 0 0 0 4px rgba(234, 67, 53, 0.2); animation: pulse 1.5s infinite; }
+  .timer { font-weight: normal; color: #888; font-size: 0.9em; }
+  .buttons { display: flex; gap: 15px; }
+  button { padding: 10px 20px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; transition: opacity 0.2s; }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .record-btn.start { background-color: #ea4335; color: white; }
+  .record-btn.stop { background-color: #333; color: white; }
+  .summary-btn { background-color: #1a73e8; color: white; }
+  .workspace { flex: 1; display: flex; overflow: hidden; }
+  .column { flex: 1; padding: 20px; display: flex; flex-direction: column; }
+  .transcript-column { border-right: 1px solid #ddd; background-color: #fff; max-width: 40%; }
+  .ai-column { background-color: #f8f9fa; gap: 20px; }
+  h3 { margin: 0 0 15px 0; font-size: 16px; color: #444; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+  .scroll-area { flex: 1; overflow-y: auto; background-color: #fff; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
+  .transcript-text { white-space: pre-wrap; line-height: 1.8; font-size: 16px; color: #222; }
+  .section { display: flex; flex-direction: column; background: #fff; border-radius: 8px; padding: 15px; border: 1px solid #e1e4e8; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .interval-summaries { flex: 2; overflow: hidden; }
+  .final-result { flex: 1; overflow: hidden; }
+  .scroll-area-cards { flex: 1; overflow-y: auto; padding-right: 5px; }
+  .summary-card { background-color: #fff; border-left: 4px solid #34a853; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); font-size: 14px; line-height: 1.6; border-radius: 0 4px 4px 0; }
+  .summary-card p { margin: 0; white-space: pre-wrap; }
+  .result-box { flex: 1; overflow-y: auto; background-color: #f0f7ff; padding: 15px; border-radius: 4px; font-size: 15px; line-height: 1.6; }
+  .final-content p { margin-top: 0; white-space: pre-wrap; }
+  .typing-indicator { font-size: 12px; color: #888; font-style: italic; padding: 5px; }
+  .loading { color: #1a73e8; font-weight: bold; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.5; } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); } 100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); } }
 </style>
