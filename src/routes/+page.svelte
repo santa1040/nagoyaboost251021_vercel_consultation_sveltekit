@@ -1,5 +1,4 @@
 <script>
-
   // @ts-nocheck
   import { Chat } from '@ai-sdk/svelte';
   import { onMount } from 'svelte';
@@ -11,7 +10,7 @@
   // --- ステート管理 ---
   let isRecording = $state(false);
   let fullTranscript = $state("");    // 全体の文字起こし
-  let bufferText = "";                // 一時保存用テキスト（要約に投げたら空にする）
+  let bufferText = "";                // 一時保存用テキスト
   let timeElapsed = $state(0);        // タイマー
   let timerInterval;
   
@@ -22,45 +21,48 @@
   let isSpeaking = $state(false);
 
   onMount(() => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      statusMessage = "エラー: Chromeブラウザを使用してください。";
-      return;
-    }
+    // ブラウザチェック（サーバーサイド実行時のエラー防止）
+    if (typeof window !== 'undefined') {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        statusMessage = "エラー: Chromeブラウザを使用してください。";
+        return;
+      }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.lang = 'ja-JP';
-    recognition.continuous = true;
-    recognition.interimResults = true;
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.lang = 'ja-JP';
+      recognition.continuous = true;
+      recognition.interimResults = true;
 
-    recognition.onresult = (event) => {
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+      recognition.onresult = (event) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          }
         }
-      }
-      
-      if (finalTranscript) {
-        const newText = finalTranscript + "。";
-        fullTranscript += newText;
-        bufferText += newText;
-      }
-    };
+        
+        if (finalTranscript) {
+          const newText = finalTranscript + "。";
+          fullTranscript += newText;
+          bufferText += newText;
+        }
+      };
 
-    recognition.onerror = (event) => {
-      console.error("音声認識エラー:", event);
-      if (event.error === 'not-allowed') {
-        statusMessage = "マイクの使用が許可されていません。";
-        stopRecording();
-      }
-    };
+      recognition.onerror = (event) => {
+        console.error("音声認識エラー:", event);
+        if (event.error === 'not-allowed') {
+          statusMessage = "マイクの使用が許可されていません。";
+          stopRecording();
+        }
+      };
 
-    recognition.onend = () => {
-      if (isRecording) {
-        try { recognition.start(); } catch (e) {}
-      }
-    };
+      recognition.onend = () => {
+        if (isRecording) {
+          try { recognition.start(); } catch (e) {}
+        }
+      };
+    }
   });
 
   // --- 録音制御 ---
@@ -95,11 +97,11 @@
   function stopRecording() {
     isRecording = false;
     statusMessage = "停止中";
-    recognition.stop();
+    if (recognition) recognition.stop();
     clearInterval(timerInterval);
     timeElapsed = 0;
 
-    // ★修正1: 停止時にバッファに残っているテキストがあれば、即座に要約処理へ回す
+    // 停止時にバッファに残っているテキストがあれば、即座に要約処理へ回す
     if (bufferText.trim().length > 0) {
       triggerIntervalSummary();
     }
@@ -134,32 +136,28 @@
     });
   }
 
-  // --- ★追加: 読み上げ機能 ---
+  // --- 読み上げ機能 ---
   function toggleSpeech() {
+    if (typeof window === 'undefined') return;
+
     if (isSpeaking) {
-      // 停止処理
       window.speechSynthesis.cancel();
       isSpeaking = false;
     } else {
-      // 再生処理
-      // AIの最後のメッセージ（要約結果）を取得
       const lastMessage = summaryChat.messages.filter(m => m.role === 'assistant').pop();
-      
-      if (!lastMessage) return; // まだ要約がない
+      if (!lastMessage) return;
 
-      // テキスト部分を抽出
       let textToRead = "";
       lastMessage.parts.forEach(part => {
         if (part.type === 'text') textToRead += part.text;
       });
 
-      // マークダウン記号（#や*）を読み上げないように簡易削除（正規表現）
-      // ※厳密な除去ではないですが、聞きやすくなります
+      // 記号を簡易削除
       textToRead = textToRead.replace(/[#*`\-]/g, '');
 
       const uttr = new SpeechSynthesisUtterance(textToRead);
       uttr.lang = 'ja-JP';
-      uttr.rate = 1.0; // 速度
+      uttr.rate = 1.0; 
       
       uttr.onend = () => {
         isSpeaking = false;
@@ -299,4 +297,18 @@
   h3 { margin: 0; font-size: 16px; color: #444; text-transform: uppercase; letter-spacing: 0.05em; }
   .transcript-column h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px; }
 
-  .scroll-area { flex: 1; overflow-y: auto; background-color: #fff; border: 1px solid #eee; padding: 1
+  .scroll-area { flex: 1; overflow-y: auto; background-color: #fff; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
+  .transcript-text { white-space: pre-wrap; line-height: 1.8; font-size: 16px; color: #222; }
+  .section { display: flex; flex-direction: column; background: #fff; border-radius: 8px; padding: 15px; border: 1px solid #e1e4e8; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .interval-summaries { flex: 2; overflow: hidden; }
+  .final-result { flex: 1; overflow: hidden; }
+  .scroll-area-cards { flex: 1; overflow-y: auto; padding-right: 5px; }
+  .summary-card { background-color: #fff; border-left: 4px solid #34a853; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); font-size: 14px; line-height: 1.6; border-radius: 0 4px 4px 0; }
+  .summary-card p { margin: 0; white-space: pre-wrap; }
+  .result-box { flex: 1; overflow-y: auto; background-color: #f0f7ff; padding: 15px; border-radius: 4px; font-size: 15px; line-height: 1.6; }
+  .final-content p { margin-top: 0; white-space: pre-wrap; }
+  .typing-indicator { font-size: 12px; color: #888; font-style: italic; padding: 5px; }
+  .loading { color: #1a73e8; font-weight: bold; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.5; } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); } 100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); } }
+</style>
