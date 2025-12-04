@@ -2,25 +2,24 @@
   import { Chat } from '@ai-sdk/svelte';
   import { onMount } from 'svelte';
 
-  // --- 2つのAIインスタンスを用意 ---
-  // 1. 30秒ごとの箇条書き用
-  const liveChat = new Chat();
-  // 2. 最終的な全体要約用
-  const summaryChat = new Chat();
+  // --- 2つのAIインスタンス ---
+  const liveChat = new Chat();     // 30秒ごとの箇条書き用
+  const summaryChat = new Chat();  // 全体要約用
 
-  // --- ステート管理 (Svelte 5 Runes) ---
+  // --- ステート管理 ---
   let isRecording = $state(false);
-  let fullTranscript = $state("");    // 全体の文字起こしテキスト
-  let bufferText = "";                // 30秒間に溜まったテキスト
-  let timeElapsed = $state(0);        // 30秒カウント用
-  let timerInterval;                  // タイマーID
+  let fullTranscript = $state("");    // 全体の文字起こし
+  let bufferText = "";                // 一時保存用テキスト（要約に投げたら空にする）
+  let timeElapsed = $state(0);        // タイマー
+  let timerInterval;
   
-  let recognition;                    // 音声認識API
+  let recognition;
   let statusMessage = $state("待機中");
 
-  // --- 初期化 ---
+  // 読み上げ用ステート
+  let isSpeaking = $state(false);
+
   onMount(() => {
-    // ブラウザチェック
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       statusMessage = "エラー: Chromeブラウザを使用してください。";
       return;
@@ -56,18 +55,13 @@
     };
 
     recognition.onend = () => {
-      // 録音中なのに止まった場合は再開（Chrome対策）
       if (isRecording) {
-        try {
-          recognition.start();
-        } catch (e) {
-          // 無視
-        }
+        try { recognition.start(); } catch (e) {}
       }
     };
   });
 
-  // --- 録音・タイマー制御 ---
+  // --- 録音制御 ---
   function toggleRecording() {
     if (isRecording) {
       stopRecording();
@@ -82,7 +76,6 @@
       isRecording = true;
       statusMessage = "録音中...";
       
-      // 30秒タイマー開始
       timeElapsed = 0;
       timerInterval = setInterval(() => {
         timeElapsed++;
@@ -103,32 +96,76 @@
     recognition.stop();
     clearInterval(timerInterval);
     timeElapsed = 0;
+
+    // ★修正1: 停止時にバッファに残っているテキストがあれば、即座に要約処理へ回す
+    if (bufferText.trim().length > 0) {
+      triggerIntervalSummary();
+    }
   }
 
-  // --- 30秒ごとの処理 ---
+  // --- 箇条書き処理 ---
   async function triggerIntervalSummary() {
     if (!bufferText.trim()) return; 
 
     const textToSummarize = bufferText;
     bufferText = ""; // バッファリセット
 
-    // AIに送信（liveChat）
     await liveChat.append({
       role: "user",
       content: `以下の文章を簡潔な箇条書きでまとめてください（挨拶不要、事実のみ、JSON不可）：\n\n${textToSummarize}`
     });
   }
 
-  // --- 全体要約ボタンの処理 ---
+  // --- 全体要約処理 ---
   async function handleFinalSummary() {
+    // 読み上げ中なら止める
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      isSpeaking = false;
+    }
+
     if (!fullTranscript.trim()) return;
 
-    // AIに送信（summaryChat）
-    // ★修正: JSONを出力しないように指示を強化
     await summaryChat.append({
       role: "user",
       content: `以下の会議/会話のログを、重要なポイントを整理して包括的に要約してください。JSON形式ではなく、見出しや箇条書きを使った読みやすいテキスト形式（マークダウン）で出力してください：\n\n${fullTranscript}`
     });
+  }
+
+  // --- ★追加: 読み上げ機能 ---
+  function toggleSpeech() {
+    if (isSpeaking) {
+      // 停止処理
+      window.speechSynthesis.cancel();
+      isSpeaking = false;
+    } else {
+      // 再生処理
+      // AIの最後のメッセージ（要約結果）を取得
+      const lastMessage = summaryChat.messages.filter(m => m.role === 'assistant').pop();
+      
+      if (!lastMessage) return; // まだ要約がない
+
+      // テキスト部分を抽出
+      let textToRead = "";
+      lastMessage.parts.forEach(part => {
+        if (part.type === 'text') textToRead += part.text;
+      });
+
+      // マークダウン記号（#や*）を読み上げないように簡易削除（正規表現）
+      // ※厳密な除去ではないですが、聞きやすくなります
+      textToRead = textToRead.replace(/[#*`\-]/g, '');
+
+      const uttr = new SpeechSynthesisUtterance(textToRead);
+      uttr.lang = 'ja-JP';
+      uttr.rate = 1.0; // 速度
+      
+      uttr.onend = () => {
+        isSpeaking = false;
+      };
+
+      window.speechSynthesis.speak(uttr);
+      isSpeaking = true;
+    }
   }
 </script>
 
@@ -161,7 +198,6 @@
   </header>
 
   <div class="workspace">
-    
     <div class="column transcript-column">
       <h3>文字起こしログ</h3>
       <div class="scroll-area">
@@ -172,7 +208,6 @@
     </div>
 
     <div class="column ai-column">
-      
       <div class="section interval-summaries">
         <h3>リアルタイム要約 (30秒ごと)</h3>
         <div class="scroll-area-cards">
@@ -194,7 +229,19 @@
       </div>
 
       <div class="section final-result">
-        <h3>全体要約結果</h3>
+        <div class="section-header">
+          <h3>全体要約結果</h3>
+          {#if summaryChat.messages.length > 0 && !summaryChat.isLoading}
+            <button class="speak-btn {isSpeaking ? 'speaking' : ''}" onclick={toggleSpeech}>
+              {#if isSpeaking}
+                ■ 読み上げ停止
+              {:else}
+                ▶ 要約を読み上げ
+              {/if}
+            </button>
+          {/if}
+        </div>
+
         <div class="result-box">
           {#each summaryChat.messages as message}
             {#if message.role === 'assistant'}
@@ -226,29 +273,28 @@
   .status-dot.active { background-color: #ea4335; box-shadow: 0 0 0 4px rgba(234, 67, 53, 0.2); animation: pulse 1.5s infinite; }
   .timer { font-weight: normal; color: #888; font-size: 0.9em; }
   .buttons { display: flex; gap: 15px; }
-  button { padding: 10px 20px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; transition: opacity 0.2s; }
+  
+  /* ボタン共通スタイル */
+  button { padding: 8px 16px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; transition: opacity 0.2s; }
   button:hover { opacity: 0.9; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .record-btn.start { background-color: #ea4335; color: white; }
   .record-btn.stop { background-color: #333; color: white; }
   .summary-btn { background-color: #1a73e8; color: white; }
+
+  /* 読み上げボタン */
+  .speak-btn { background-color: #e8f0fe; color: #1a73e8; border: 1px solid #d2e3fc; font-size: 12px; margin-left: auto; }
+  .speak-btn:hover { background-color: #d2e3fc; }
+  .speak-btn.speaking { background-color: #ea4335; color: white; border-color: #ea4335; }
+
   .workspace { flex: 1; display: flex; overflow: hidden; }
   .column { flex: 1; padding: 20px; display: flex; flex-direction: column; }
   .transcript-column { border-right: 1px solid #ddd; background-color: #fff; max-width: 40%; }
   .ai-column { background-color: #f8f9fa; gap: 20px; }
-  h3 { margin: 0 0 15px 0; font-size: 16px; color: #444; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-  .scroll-area { flex: 1; overflow-y: auto; background-color: #fff; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
-  .transcript-text { white-space: pre-wrap; line-height: 1.8; font-size: 16px; color: #222; }
-  .section { display: flex; flex-direction: column; background: #fff; border-radius: 8px; padding: 15px; border: 1px solid #e1e4e8; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-  .interval-summaries { flex: 2; overflow: hidden; }
-  .final-result { flex: 1; overflow: hidden; }
-  .scroll-area-cards { flex: 1; overflow-y: auto; padding-right: 5px; }
-  .summary-card { background-color: #fff; border-left: 4px solid #34a853; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); font-size: 14px; line-height: 1.6; border-radius: 0 4px 4px 0; }
-  .summary-card p { margin: 0; white-space: pre-wrap; }
-  .result-box { flex: 1; overflow-y: auto; background-color: #f0f7ff; padding: 15px; border-radius: 4px; font-size: 15px; line-height: 1.6; }
-  .final-content p { margin-top: 0; white-space: pre-wrap; }
-  .typing-indicator { font-size: 12px; color: #888; font-style: italic; padding: 5px; }
-  .loading { color: #1a73e8; font-weight: bold; animation: blink 1s infinite; }
-  @keyframes blink { 50% { opacity: 0.5; } }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); } 100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); } }
-</style>
+  
+  .section-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px; }
+  h3 { margin: 0; font-size: 16px; color: #444; text-transform: uppercase; letter-spacing: 0.05em; }
+  .transcript-column h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px; }
+
+  .scroll-area { flex: 1; overflow-y: auto; background-color: #fff; border: 1px solid #eee; padding: 1
