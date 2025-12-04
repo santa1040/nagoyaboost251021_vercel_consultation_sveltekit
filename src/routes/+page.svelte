@@ -1,323 +1,445 @@
 <script>
   import { Chat } from '@ai-sdk/svelte';
   import { onMount } from 'svelte';
-  import { fetchRandomUser } from '$lib/fetchRandomUser';
 
-  const chat = new Chat();
-  
-  let currentUser = $state(null);
-  let isLoading = $state(true);
-  let userMessage = $state("");
-  let messagesContainer;
-  
-  // 録音・デバッグ用ステート
+  // --- 2つのAIインスタンスを用意 ---
+  // 1. 30秒ごとの箇条書き用
+  const liveChat = new Chat();
+  // 2. 最終的な全体要約用
+  const summaryChat = new Chat();
+
+  // --- ステート管理 (Svelte 5 Runes) ---
   let isRecording = $state(false);
-  let debugStatus = $state("初期化待ち..."); 
-  let recognition; 
+  let fullTranscript = $state("");    // 全体の文字起こしテキスト
+  let bufferText = "";                // 30秒間に溜まったテキスト（要約に投げたら空にする）
+  let timeElapsed = $state(0);        // 30秒カウント用
+  let timerInterval;                  // タイマーID
+  
+  let recognition;                    // 音声認識API
+  let statusMessage = $state("待機中");
 
-  const logo_img_url = "https://qsbkq9revdprke1d.public.blob.vercel-storage.com/vercel_tutorial/logo.png";
-
-  $effect(() => {
-    if (chat.messages && messagesContainer) {
-      scrollToBottom();
+  // --- 初期化 ---
+  onMount(() => {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      statusMessage = "エラー: Chromeブラウザを使用してください。";
+      return;
     }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event) => {
+      let finalTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        }
+      }
+      
+      if (finalTranscript) {
+        // 画面表示用と、30秒バッファ用の両方に追加
+        const newText = finalTranscript + "。";
+        fullTranscript += newText;
+        bufferText += newText;
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error("音声認識エラー:", event);
+      if (event.error === 'not-allowed') {
+        statusMessage = "マイクの使用が許可されていません。";
+        stopRecording();
+      }
+    };
+
+    recognition.onend = () => {
+      // 録音中フラグが立っているのに止まった場合は再開する（ブラウザの仕様対策）
+      if (isRecording) {
+        try {
+          recognition.start();
+        } catch (e) {
+          // すでに動いている等のエラーは無視
+        }
+      }
+    };
   });
 
-  function scrollToBottom() {
-    if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  // --- 録音・タイマー制御 ---
+  function toggleRecording() {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
     }
   }
 
-  onMount(async () => {
-    // 1. マイクの準備
-    debugStatus = "音声認識APIを確認中...";
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      debugStatus = "エラー: このブラウザは音声認識APIを持っていません (Chrome推奨)。";
-    } else {
-      try {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'ja-JP';
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        recognition.onstart = () => {
-          debugStatus = "録音中... (話しかけてください)";
-        };
-
-        recognition.onresult = (event) => {
-          let finalTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript;
-            }
-          }
-          if (finalTranscript) {
-            userMessage = (userMessage + " " + finalTranscript).trim();
-          }
-        };
-
-        recognition.onerror = (event) => {
-          console.error("詳細エラー:", event);
-          isRecording = false;
-          if (event.error === 'not-allowed') {
-            debugStatus = "エラー: マイクの使用が許可されていません。";
-          } else if (event.error === 'network') {
-            debugStatus = "エラー: ネットワーク接続が必要です。";
-          } else {
-            debugStatus = `エラー発生: ${event.error}`;
-          }
-        };
-
-        recognition.onend = () => {
-          if (isRecording) {
-            isRecording = false;
-            debugStatus = "待機中 (自動停止しました)";
-          }
-        };
-        debugStatus = "待機中 (準備OK)";
-      } catch (e) {
-        console.error(e);
-        debugStatus = `初期化例外: ${e.message}`;
-      }
-    }
-
-    // 2. ユーザー取得（失敗してもOKにする）
+  function startRecording() {
     try {
-      currentUser = await fetchRandomUser();
-    } catch (error) {
-      console.error('ユーザー取得エラー（無視して続行）:', error);
-    } finally {
-      isLoading = false;
+      recognition.start();
+      isRecording = true;
+      statusMessage = "録音中...";
+      
+      // 30秒タイマー開始
+      timeElapsed = 0;
+      timerInterval = setInterval(() => {
+        timeElapsed++;
+        if (timeElapsed >= 30) {
+          triggerIntervalSummary();
+          timeElapsed = 0;
+        }
+      }, 1000);
+
+    } catch (e) {
+      console.error(e);
     }
-  });
+  }
 
-  const toggleRecording = () => {
-    if (!recognition) {
-      alert(`機能が利用できません。\n現在の状態: ${debugStatus}`);
-      return;
-    }
-    if (isRecording) {
-      recognition.stop();
-      isRecording = false;
-      debugStatus = "待機中 (停止)";
-    } else {
-      try {
-        recognition.start();
-        isRecording = true;
-      } catch (e) {
-        console.error(e);
-        isRecording = false;
-      }
-    }
-  };
+  function stopRecording() {
+    isRecording = false;
+    statusMessage = "停止中";
+    recognition.stop();
+    clearInterval(timerInterval);
+    timeElapsed = 0;
+  }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!userMessage.trim()) return;
+  // --- 30秒ごとの処理 ---
+  async function triggerIntervalSummary() {
+    if (!bufferText.trim()) return; // 話していない場合はスキップ
 
-    if (isRecording) {
-      toggleRecording();
-    }
+    const textToSummarize = bufferText;
+    bufferText = ""; // バッファをリセット
 
-    // ユーザー情報がない場合はゲストとして扱う
-    const userData = currentUser ? {
-      name: `${currentUser.name.first} ${currentUser.name.last}`,
-      gender: currentUser.gender,
-      country: currentUser.location.country,
-      city: currentUser.location.city,
-      age: currentUser.dob.age,
-      email: currentUser.email,
-      username: currentUser.login.username,
-      picture: currentUser.picture.thumbnail
-    } : { 
-      name: "Guest User",
-      gender: "unknown",
-      country: "Japan",
-      city: "Tokyo",
-      age: 30,
-      email: "guest@example.com",
-      username: "guest",
-      picture: "https://via.placeholder.com/150" // 仮の画像
-    };
-
-    const contentToSend = `【以下の録音データを要約してください】\n\n${userMessage}`;
-
-    await chat.append({
-      data: { user: userData },
-      content: contentToSend,
-      role: "user"
+    // AIに送信（liveChatインスタンスを使用）
+    // 過去の文脈を引き継ぎすぎないよう、明確に指示を出します
+    await liveChat.append({
+      role: "user",
+      content: `以下の文章を簡潔な箇条書きでまとめてください（挨拶不要、事実のみ）：\n\n${textToSummarize}`
     });
-    
-    userMessage = "";
-  };
+  }
+
+  // --- 全体要約ボタンの処理 ---
+  async function handleFinalSummary() {
+    if (!fullTranscript.trim()) return;
+
+    // AIに送信（summaryChatインスタンスを使用）
+    await summaryChat.append({
+      role: "user",
+      content: `以下の会議/会話のログを、重要なポイントを整理して包括的に要約してください：\n\n${fullTranscript}`
+    });
+  }
 </script>
 
-<main>
-  <div class="chat-container">
-    <div class="profile-section">
-      {#if isLoading}
-        <div class="loading">ユーザー情報を読み込み中...</div>
+<main class="app-container">
+  <header class="control-panel">
+    <div class="status-indicator">
+      <div class="status-dot {isRecording ? 'active' : ''}"></div>
+      <span>{statusMessage}</span>
+      {#if isRecording}
+        <span class="timer">（次の要約まで: {30 - timeElapsed}秒）</span>
       {/if}
-      
-      {#if currentUser}
-        <div class="profile-card">
-          <img src={currentUser.picture.medium} alt="Profile" class="profile-image" />
-          <div class="profile-info">
-            <h2>@{currentUser.login.username}</h2>
-            <p class="real-name">{currentUser.name.first} {currentUser.name.last}</p>
-            <p class="location">{currentUser.location.country}, {currentUser.location.city}</p>
-            <p class="age">{currentUser.dob.age}歳</p>
-          </div>
-        </div>
-      {:else if !isLoading}
-        <div class="profile-card">
-          <div class="profile-image" style="background: #ccc; display:flex; align-items:center; justify-content:center;">G</div>
-          <div class="profile-info">
-            <h2>Guest</h2>
-            <p class="real-name">ゲストユーザー</p>
-          </div>
-        </div>
-      {/if}
-      
-      <div class="logo-section">
-        <img src={logo_img_url} alt="Logo" class="logo-image" />
+    </div>
+
+    <div class="buttons">
+      <button 
+        class="record-btn {isRecording ? 'stop' : 'start'}" 
+        onclick={toggleRecording}
+      >
+        {isRecording ? '録音停止' : '録音開始'}
+      </button>
+
+      <button 
+        class="summary-btn" 
+        onclick={handleFinalSummary}
+        disabled={!fullTranscript}
+      >
+        全体を要約する
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    
+    <div class="column transcript-column">
+      <h3>文字起こしログ</h3>
+      <div class="scroll-area">
+        <p class="transcript-text">
+          {fullTranscript || "ここに文字起こしテキストが表示されます..."}
+        </p>
       </div>
     </div>
 
-    <div class="messages-section">
-      <div class="messages-container" bind:this={messagesContainer}>
-        {#each chat.messages as message, messageIndex (messageIndex)}
-          <div class="message-row {message.role}">
-            {#if message.role === 'user'}
-              <div class="message user-message">
-                <div class="message-text">
-                  {#each message.parts as part, partIndex (partIndex)}
-                    {#if part.type === 'text'}
-                      <p>{part.text}</p>
-                    {/if}
-                  {/each}
-                </div>
-                <div class="message-info">
-                  <span class="message-time">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-              </div>
-              <div class="user-avatar">
-                <div class="avatar-placeholder">You</div>
-              </div>
-            {:else if message.role === 'assistant'}
-              <div class="assistant-avatar">
-                {#if currentUser}
-                  <img src={currentUser.picture.thumbnail} alt="Avatar" />
-                {:else}
-                   <div style="width:100%; height:100%; background:#ccc;"></div>
-                {/if}
-              </div>
-              <div class="message assistant-message">
-                <div class="message-header">
-                  {#if currentUser}
-                    <span class="author-name">@{currentUser.login.username}</span>
-                    <span class="author-location">{currentUser.location.country}</span>
-                  {:else}
-                    <span class="author-name">AI Assistant</span>
-                  {/if}
-                </div>
-                <div class="message-text">
-                  {#each message.parts as part, partIndex (partIndex)}
-                    {#if part.type === 'text'}
-                      <p>{part.text}</p>
-                    {/if}
-                  {/each}
-                </div>
-                <div class="message-info">
-                  <span class="message-time">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
+    <div class="column ai-column">
       
-      <div style="font-size: 12px; color: #ea4335; text-align: center; padding: 5px; background-color: #f8f9fa;">
-        システム状態: {debugStatus}
-      </div>
-
-      <div class="input-section">
-        <form onsubmit={handleSubmit} class="message-form">
-          <button 
-            type="button" 
-            class="mic-button {isRecording ? 'recording' : ''}" 
-            onclick={toggleRecording}
-            aria-label="音声入力を開始"
-          >
-            {#if isRecording}
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="6" y="6" width="12" height="12" rx="2" fill="white"/>
-              </svg>
-            {:else}
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                <line x1="12" y1="19" x2="12" y2="23"></line>
-                <line x1="8" y1="23" x2="16" y2="23"></line>
-              </svg>
+      <div class="section interval-summaries">
+        <h3>リアルタイム要約 (30秒ごと)</h3>
+        <div class="scroll-area-cards">
+          {#each liveChat.messages as message}
+            {#if message.role === 'assistant'}
+              <div class="summary-card">
+                {#each message.parts as part}
+                  {#if part.type === 'text'}
+                    <p>{part.text}</p>
+                  {/if}
+                {/each}
+              </div>
             {/if}
-          </button>
-
-          <input 
-            bind:value={userMessage} 
-            placeholder={isRecording ? "聞いています..." : "メッセージを入力、またはマイクで録音して要約"} 
-            class="message-input" 
-          />
-          <button 
-            type="submit" 
-            disabled={!userMessage} 
-            class="send-button"
-          >
-            要約する
-          </button>
-        </form>
+          {/each}
+          {#if isRecording && bufferText.length > 0}
+             <div class="typing-indicator">集音中...</div>
+          {/if}
+        </div>
       </div>
+
+      <div class="section final-result">
+        <h3>全体要約結果</h3>
+        <div class="result-box">
+          {#each summaryChat.messages as message}
+            {#if message.role === 'assistant'}
+              <div class="final-content">
+                {#each message.parts as part}
+                  {#if part.type === 'text'}
+                    <p>{part.text}</p>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+          {/each}
+          {#if summaryChat.isLoading}
+            <p class="loading">全体を分析中...</p>
+          {/if}
+        </div>
+      </div>
+
     </div>
   </div>
 </main>
 
 <style>
-  .chat-container { display: flex; height: 100vh; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-  .profile-section { width: 300px; border-right: 1px solid #e1e4e8; padding: 20px; background-color: #f8f9fa; display: flex; flex-direction: column; justify-content: space-between; }
-  .messages-section { flex: 1; display: flex; flex-direction: column; }
-  .messages-container { flex: 1; padding: 20px; overflow-y: auto; background-color: #fff; scroll-behavior: smooth; }
-  .input-section { padding: 15px; border-top: 1px solid #e1e4e8; background-color: #f8f9fa; }
-  .message-form { display: flex; align-items: center; gap: 10px; }
-  .message-input { flex: 1; padding: 12px; border: 1px solid #dfe1e5; border-radius: 24px; font-size: 16px; outline: none; }
-  .send-button { padding: 0 20px; height: 44px; background-color: #1a73e8; color: white; border: none; border-radius: 24px; font-weight: bold; cursor: pointer; white-space: nowrap; }
-  .send-button:disabled { background-color: #a8c7fa; cursor: not-allowed; }
-  .mic-button { width: 44px; height: 44px; border-radius: 50%; border: 1px solid #dfe1e5; background-color: white; color: #5f6368; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
-  .mic-button:hover { background-color: #f1f3f4; }
-  .mic-button.recording { background-color: #ea4335; color: white; border-color: #ea4335; animation: pulse 1.5s infinite; }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); } 100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); } }
-  .message-row { display: flex; margin-bottom: 20px; }
-  .message-row.user { flex-direction: row-reverse; }
-  .message { max-width: 70%; padding: 15px; border-radius: 18px; position: relative; }
-  .user-message { background-color: #e6f7ff; margin-right: 15px; border-top-right-radius: 4px; }
-  .assistant-message { background-color: #f1f3f4; margin-left: 15px; border-top-left-radius: 4px; }
-  .user-avatar, .assistant-avatar { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-  .user-avatar { background-color: #1a73e8; color: white; }
-  .assistant-avatar img { width: 100%; height: 100%; object-fit: cover; }
-  .avatar-placeholder { font-size: 12px; font-weight: bold; }
-  .message-header { margin-bottom: 8px; font-weight: bold; }
-  .author-name { font-size: 15px; }
-  .author-location { font-size: 13px; color: #5f6368; margin-left: 8px; }
-  .message-text p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
-  .message-info { display: flex; justify-content: flex-end; margin-top: 8px; }
-  .message-time { font-size: 12px; color: #5f6368; }
-  .profile-card { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 20px; border-radius: 12px; background-color: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
-  .profile-image { width: 120px; height: 120px; border-radius: 50%; object-fit: cover; margin-bottom: 15px; border: 4px solid white; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); }
-  .profile-info h2 { margin: 0 0 5px 0; font-size: 22px; }
-  .real-name { color: #5f6368; margin: 0 0 15px 0; font-size: 16px; }
-  .location, .age { margin: 5px 0; color: #5f6368; font-size: 14px; }
-  .loading { text-align: center; padding: 20px; color: #5f6368; }
-  .logo-section { margin-top: auto; padding-top: 20px; }
-  .logo-image { width: 100%; height: auto; max-width: 260px; display: block; }
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f0f2f5;
+    color: #333;
+  }
+
+  .app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* ヘッダー */
+  .control-panel {
+    background-color: #fff;
+    padding: 15px 30px;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    z-index: 10;
+  }
+
+  .status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: bold;
+    color: #555;
+  }
+
+  .status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: #ccc;
+    transition: background-color 0.3s;
+  }
+
+  .status-dot.active {
+    background-color: #ea4335;
+    box-shadow: 0 0 0 4px rgba(234, 67, 53, 0.2);
+    animation: pulse 1.5s infinite;
+  }
+
+  .timer {
+    font-weight: normal;
+    color: #888;
+    font-size: 0.9em;
+  }
+
+  .buttons {
+    display: flex;
+    gap: 15px;
+  }
+
+  button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 14px;
+    transition: opacity 0.2s;
+  }
+
+  button:hover {
+    opacity: 0.9;
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .record-btn.start {
+    background-color: #ea4335;
+    color: white;
+  }
+
+  .record-btn.stop {
+    background-color: #333;
+    color: white;
+  }
+
+  .summary-btn {
+    background-color: #1a73e8;
+    color: white;
+  }
+
+  /* ワークスペース (左右カラム) */
+  .workspace {
+    flex: 1;
+    display: flex;
+    overflow: hidden; /* コンテナ自体はスクロールさせない */
+  }
+
+  .column {
+    flex: 1;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .transcript-column {
+    border-right: 1px solid #ddd;
+    background-color: #fff;
+    max-width: 40%;
+  }
+
+  .ai-column {
+    background-color: #f8f9fa;
+    gap: 20px;
+  }
+
+  h3 {
+    margin: 0 0 15px 0;
+    font-size: 16px;
+    color: #444;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+  }
+
+  .scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    background-color: #fff;
+    border: 1px solid #eee;
+    padding: 15px;
+    border-radius: 4px;
+  }
+
+  .transcript-text {
+    white-space: pre-wrap;
+    line-height: 1.8;
+    font-size: 16px;
+    color: #222;
+  }
+
+  /* 右側のセクション分割 */
+  .section {
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border-radius: 8px;
+    padding: 15px;
+    border: 1px solid #e1e4e8;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  .interval-summaries {
+    flex: 2; /* 箇条書きエリアを広めに */
+    overflow: hidden;
+  }
+
+  .final-result {
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .scroll-area-cards {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 5px;
+  }
+
+  /* カードスタイル */
+  .summary-card {
+    background-color: #fff;
+    border-left: 4px solid #34a853; /* 緑のアクセント */
+    padding: 12px;
+    margin-bottom: 10px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    font-size: 14px;
+    line-height: 1.6;
+    border-radius: 0 4px 4px 0;
+  }
+  
+  .summary-card p {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+
+  .result-box {
+    flex: 1;
+    overflow-y: auto;
+    background-color: #f0f7ff; /* 薄い青 */
+    padding: 15px;
+    border-radius: 4px;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .final-content p {
+    margin-top: 0;
+  }
+
+  .typing-indicator {
+    font-size: 12px;
+    color: #888;
+    font-style: italic;
+    padding: 5px;
+  }
+  
+  .loading {
+    color: #1a73e8;
+    font-weight: bold;
+    animation: blink 1s infinite;
+  }
+
+  @keyframes blink {
+    50% { opacity: 0.5; }
+  }
+
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(234, 67, 53, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
+  }
 </style>
